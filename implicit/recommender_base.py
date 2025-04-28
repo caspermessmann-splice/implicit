@@ -39,6 +39,7 @@ class RecommenderBase(metaclass=ABCMeta):
         filter_items=None,
         recalculate_user=False,
         items=None,
+        filter_user_items=None,
     ):
         """
         Recommends items for users.
@@ -88,6 +89,10 @@ class RecommenderBase(metaclass=ABCMeta):
             Array of extra item ids. When set this will only rank the items in this array instead
             of ranking every item the model was fit for. This parameter cannot be used with
             filter_items
+        filter_user_items : csr_matrix, optional
+            A sparse matrix of shape (users, number_items) to use for filtering out items that
+            the user has already interacted with. If not provided and filter_already_liked_items
+            is True, the user_items matrix will be used for filtering.
 
         Returns
         -------

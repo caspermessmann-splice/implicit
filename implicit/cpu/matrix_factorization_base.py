@@ -40,6 +40,7 @@ class MatrixFactorizationBase(RecommenderBase):
         filter_items=None,
         recalculate_user=False,
         items=None,
+        filter_user_items=None,
     ):
         if filter_already_liked_items or recalculate_user:
             if not isinstance(user_items, csr_matrix):
@@ -47,6 +48,12 @@ class MatrixFactorizationBase(RecommenderBase):
             user_count = 1 if np.isscalar(userid) else len(userid)
             if user_items.shape[0] != user_count:
                 raise ValueError("user_items must contain 1 row for every user in userids")
+
+        if filter_user_items is not None:
+            if not isinstance(filter_user_items, csr_matrix):
+                raise ValueError("filter_user_items needs to be a CSR sparse matrix")
+            if filter_user_items.shape[0] != (1 if np.isscalar(userid) else len(userid)):
+                raise ValueError("filter_user_items must contain 1 row for every user in userids")
 
         user = self._user_factor(userid, user_items, recalculate_user)
 
@@ -70,7 +77,7 @@ class MatrixFactorizationBase(RecommenderBase):
         # get a CSR matrix of items to filter per-user
         filter_query_items = None
         if filter_already_liked_items:
-            filter_query_items = user_items
+            filter_query_items = filter_user_items if filter_user_items is not None else user_items
 
             # if we've been given a list of explicit itemids to rank, we need to filter down
             if items is not None:
@@ -102,6 +109,7 @@ class MatrixFactorizationBase(RecommenderBase):
         filter_already_liked_items=True,
         filter_items=None,
         users_items_offset=0,
+        filter_user_items=None,
     ):
         warnings.warn(
             "recommend_all is deprecated. Use recommend with an array of userids instead",
@@ -117,6 +125,14 @@ class MatrixFactorizationBase(RecommenderBase):
             adjusted[users_items_offset:] = user_items
             user_items = adjusted.tocsr()
 
+            if filter_user_items is not None:
+                adjusted_filter = lil_matrix(
+                    (filter_user_items.shape[0] + users_items_offset, filter_user_items.shape[1]),
+                    dtype=filter_user_items.dtype,
+                )
+                adjusted_filter[users_items_offset:] = filter_user_items
+                filter_user_items = adjusted_filter.tocsr()
+
         ids, _ = self.recommend(
             userids,
             user_items,
@@ -124,6 +140,7 @@ class MatrixFactorizationBase(RecommenderBase):
             filter_already_liked_items=filter_already_liked_items,
             filter_items=filter_items,
             recalculate_user=recalculate_user,
+            filter_user_items=filter_user_items,
         )
         return ids
 
