@@ -1,6 +1,3 @@
-# cython: language_level=3
-# cython: embedsignature=True
-
 import cython
 
 from cython cimport floating, integral
@@ -55,7 +52,7 @@ cdef class RNGVector(object):
             self.rng.push_back(mt19937(rng_seeds[i]))
             self.dist.push_back(uniform_int_distribution[long](0, rows))
 
-    cdef inline long generate(self, int thread_id) nogil:
+    cdef inline long generate(self, int thread_id) noexcept nogil:
         return self.dist[thread_id](self.rng[thread_id])
 
 
@@ -154,14 +151,14 @@ class LogisticMatrixFactorization(MatrixFactorizationBase):
         # user_factors[-2] = user bias, item factors[-1] = item bias
         # This significantly simplifies both training, and serving
         if self.item_factors is None:
-            self.item_factors = rs.normal(size=(items, self.factors + 2)).astype(np.float32)
+            self.item_factors = rs.standard_normal(size=(items, self.factors + 2), dtype=np.float32)
             self.item_factors[:, -1] = 1.0
 
             # set factors to all zeros for items without any ratings
             self.item_factors[item_counts == 0] = np.zeros(self.factors + 2)
 
         if self.user_factors is None:
-            self.user_factors = rs.normal(size=(users, self.factors + 2)).astype(np.float32)
+            self.user_factors = rs.standard_normal(size=(users, self.factors + 2), dtype=np.float32)
             self.user_factors[:, -2] = 1.0
 
             # set factors to all zeros for users without any ratings
@@ -176,7 +173,7 @@ class LogisticMatrixFactorization(MatrixFactorizationBase):
             num_threads = multiprocessing.cpu_count()
 
         # initialize RNG's, one per thread. Also pass the seeds for each thread's RNG
-        cdef long[:] rng_seeds = rs.randint(0, 2**31, size=num_threads)
+        cdef long[:] rng_seeds = rs.integers(0, 2**31, size=num_threads, dtype="long")
         cdef RNGVector rng = RNGVector(num_threads, len(user_items.data) - 1, rng_seeds)
 
         log.debug("Running %i LMF training epochs", self.iterations)
@@ -221,7 +218,7 @@ class LogisticMatrixFactorization(MatrixFactorizationBase):
 
 
 @cython.cdivision(True)
-cdef inline floating sigmoid(floating x) nogil:
+cdef inline floating sigmoid(floating x) noexcept nogil:
     if x >= 0:
         return 1 / (1+exp(-x))
     else:

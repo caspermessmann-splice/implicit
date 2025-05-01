@@ -1,6 +1,4 @@
 # distutils: language = c++
-# cython: language_level=3
-# cython: embedsignature=True
 
 import cython
 import numpy as np
@@ -32,7 +30,7 @@ def train_test_split(ratings, train_percentage=0.8, random_state=None):
 
     ratings = ratings.tocoo()
     random_state = check_random_state(random_state)
-    random_index = random_state.random_sample(len(ratings.data))
+    random_index = random_state.random(len(ratings.data))
     train_index = random_index < train_percentage
     test_index = random_index >= train_percentage
 
@@ -358,7 +356,7 @@ def AUC_at_k(model, train_user_items, test_user_items, int K=10,
     Returns
     -------
     float
-        the calculated ndcg@k
+        the calculated AUC@k
     """
     return ranking_metrics_at_k(
         model, train_user_items, test_user_items, K, show_progress, num_threads)['auc']

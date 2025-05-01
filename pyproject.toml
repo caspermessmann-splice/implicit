@@ -8,7 +8,9 @@ requires = [
     "wheel",
     "scikit-build>=0.13.1",
     "Cython>=0.24",
-    "scipy>=0.16"
+    "scipy>=0.16",
+    "cmake>=3.18",
+    "ninja"
 ]
 build-backend = "setuptools.build_meta"
 
@@ -34,8 +36,6 @@ CUDACXX = "/usr/local/cuda/bin/nvcc"
 # wheel cannot be tested in this configuration.
 [tool.cibuildwheel.macos]
 archs = ["x86_64", "universal2", "arm64"]
-
-
 
 [tool.pytest.ini_options]
 filterwarnings = ['ignore::implicit.utils.ParameterWarning']

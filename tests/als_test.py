@@ -1,3 +1,4 @@
+import pickle
 import unittest
 
 import numpy as np
@@ -6,6 +7,7 @@ from numpy.testing import assert_array_equal
 from recommender_base_test import RecommenderBaseTestMixin, get_checker_board
 from scipy.sparse import coo_matrix, csr_matrix, random
 
+import implicit
 from implicit.als import AlternatingLeastSquares
 from implicit.gpu import HAS_CUDA
 
@@ -25,25 +27,45 @@ if HAS_CUDA:
                 factors=32, regularization=0, random_state=23, use_gpu=True
             )
 
+    class GPUALSTestFloat16(unittest.TestCase, RecommenderBaseTestMixin):
+        def _get_model(self):
+            return AlternatingLeastSquares(
+                factors=32, regularization=0, random_state=23, use_gpu=True, dtype=np.float16
+            )
+
 
 @pytest.mark.parametrize("use_gpu", [True, False] if HAS_CUDA else [False])
 def test_zero_iterations_with_loss(use_gpu):
     model = AlternatingLeastSquares(
         factors=128, use_gpu=use_gpu, iterations=0, calculate_training_loss=True
     )
-    model.fit(csr_matrix(np.ones((10, 10))))
+    model.fit(csr_matrix(np.ones((10, 10))), show_progress=False)
 
 
 @pytest.mark.skipif(not HAS_CUDA, reason="test requires gpu")
 def test_recalculate_after_cpu_conversion():
     # test out issue reported in https://github.com/benfred/implicit/issues/597
     user_items = get_checker_board(50)
-
     model = AlternatingLeastSquares(factors=2, use_gpu=True)
-    model.fit(user_items)
+    model.fit(user_items, show_progress=False)
     original_ids, _ = model.recommend(0, user_items=user_items[0], recalculate_user=True)
 
     model = model.to_cpu().to_gpu()
+    ids, _ = model.recommend(0, user_items=user_items[0], recalculate_user=True)
+
+    assert_array_equal(ids, original_ids)
+
+
+@pytest.mark.parametrize("use_gpu", [True, False] if HAS_CUDA else [False])
+def test_recalculate_after_pickle(use_gpu):
+    user_items = get_checker_board(10)
+    model = AlternatingLeastSquares(factors=2, use_gpu=use_gpu, regularization=0.1)
+    model.fit(user_items, show_progress=False)
+    model._XtX = model._YtY = None
+
+    original_ids, _ = model.recommend(0, user_items=user_items[0], recalculate_user=True)
+
+    model = pickle.loads(pickle.dumps(model))
     ids, _ = model.recommend(0, user_items=user_items[0], recalculate_user=True)
 
     assert_array_equal(ids, original_ids)
@@ -157,7 +179,7 @@ def test_factorize(use_native, use_gpu, use_cg, dtype):
     reconstructed = rows.dot(cols.T)
     for i in range(counts.shape[0]):
         for j in range(counts.shape[1]):
-            assert pytest.approx(counts[i, j], abs=1e-4) == reconstructed[i, j], (
+            assert pytest.approx(counts[i, j], abs=1e-3) == reconstructed[i, j], (
                 "failed to reconstruct row=%s, col=%s,"
                 " value=%.5f, dtype=%s, cg=%s, native=%s gpu=%s"
                 % (i, j, reconstructed[i, j], dtype, use_cg, use_native, use_gpu)
@@ -277,3 +299,67 @@ def test_incremental_retrain(use_gpu):
     model.partial_fit_items([101], likes[1])
     ids, _ = model.recommend(101, likes[1], N=3)
     assert set(ids) == {1, 100, 101}
+
+
+@pytest.mark.parametrize("use_gpu", [True, False] if HAS_CUDA else [False])
+def test_calculate_loss_simple(use_gpu):
+    if use_gpu:
+        calculate_loss = implicit.gpu.als.calculate_loss
+
+    else:
+        calculate_loss = implicit.cpu.als.calculate_loss
+
+    # the only user has liked item 0, but not interacted with item 1
+    n_users, n_items = 1, 2
+    ratings = coo_matrix(([1.0], ([0], [0])), shape=(n_users, n_items)).tocsr()
+
+    # factors are designed to be perfectly wrong, to test loss function
+    item_factors = np.array([[0.0], [1.0]], dtype="float32")
+    user_factors = np.array([[1.0]], dtype="float32")
+
+    loss = calculate_loss(ratings, user_factors, item_factors, regularization=0)
+    assert loss == pytest.approx(1.0)
+
+    loss = calculate_loss(ratings, user_factors, item_factors, regularization=1.0)
+    assert loss == pytest.approx(2.0)
+
+
+@pytest.mark.skipif(not implicit.gpu.HAS_CUDA, reason="needs cuda build")
+@pytest.mark.parametrize("n_users", [2**13, 2**19])
+@pytest.mark.parametrize("n_items", [2**19])
+@pytest.mark.parametrize("n_samples", [2**20])
+@pytest.mark.parametrize("regularization", [0.0, 1.0, 500000.0])
+def test_gpu_loss(n_users, n_items, n_samples, regularization):
+    # we used to have some errors in the gpu loss function
+    # if  n_items * n_users >2**31. Test out that the loss on the gpu
+    # matches that on the cpu
+    # https://github.com/benfred/implicit/issues/441
+    # https://github.com/benfred/implicit/issues/367
+    liked_items = np.random.randint(0, n_items, n_samples)
+    liked_users = np.random.randint(0, n_users, n_samples)
+    ratings = coo_matrix(
+        (np.ones(n_samples), (liked_users, liked_items)), shape=(n_users, n_items)
+    ).tocsr()
+
+    factors = 32
+    item_factors = np.random.random((n_items, factors)).astype("float32")
+    user_factors = np.random.random((n_users, factors)).astype("float32")
+
+    gpu_loss = implicit.gpu.als.calculate_loss(ratings, user_factors, item_factors, regularization)
+    cpu_loss = implicit.cpu.als.calculate_loss(ratings, user_factors, item_factors, regularization)
+
+    assert gpu_loss == pytest.approx(cpu_loss, rel=1e-5)
+
+
+def test_calculate_loss_segfault():
+    # this code used to segfault, because of a bug in calculate_loss
+    factors = 1
+    regularization = 0
+    n_users, n_items = 4, 4
+
+    item_factors = np.random.random((n_items, factors)).astype("float32")
+    user_factors = np.random.random((n_users, factors)).astype("float32")
+    c_ui = coo_matrix(([1.0, 1.0], ([0, 1], [0, 1])), shape=(n_users, n_items)).tocsr()
+
+    loss = implicit.cpu.als.calculate_loss(c_ui, user_factors, item_factors, regularization)
+    assert loss > 0

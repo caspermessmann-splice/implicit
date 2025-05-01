@@ -45,7 +45,7 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
     num_threads : int, optional
         The number of threads to use for fitting the model and batch recommend calls.
         Specifying 0 means to default to the number of cores on the machine.
-    random_state : int, numpy.random.RandomState or None, optional
+    random_state : int, numpy.random.RandomState, np.random.Generator or None, optional
         The random state for seeding the initial item and user factors.
         Default is None.
 
@@ -141,9 +141,9 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
         s = time.time()
         # Initialize the variables randomly if they haven't already been set
         if self.user_factors is None:
-            self.user_factors = random_state.rand(users, self.factors).astype(self.dtype) * 0.01
+            self.user_factors = random_state.random((users, self.factors), dtype=self.dtype) * 0.01
         if self.item_factors is None:
-            self.item_factors = random_state.rand(items, self.factors).astype(self.dtype) * 0.01
+            self.item_factors = random_state.random((items, self.factors), dtype=self.dtype) * 0.01
 
         log.debug("Initialized factors in %s", time.time() - s)
 
@@ -215,6 +215,7 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
             Sparse matrix of (users, items) that contain the users that liked
             each item.
         """
+        user_items = check_csr(user_items)
 
         # we're using the cholesky solver here on purpose, since for a full recompute
         users = 1 if np.isscalar(userid) else len(userid)
@@ -252,6 +253,7 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
             Sparse matrix of (items, users) that contain the users that liked
             each item
         """
+        item_users = check_csr(item_users)
 
         if self.alpha != 1.0:
             item_users = self.alpha * item_users
@@ -304,6 +306,10 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
         # update the stored factors with the newly calculated values
         self.user_factors[userids] = user_factors
 
+        # clear any cached properties that are invalidated by this update
+        self._user_norms = None
+        self._XtX = None
+
     def partial_fit_items(self, itemids, item_users):
         """Incrementally updates item factors
 
@@ -336,6 +342,10 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
 
         # update the stored factors with the newly calculated values
         self.item_factors[itemids] = item_factors
+
+        # clear any cached properties that are invalidated by this update
+        self._item_norms = None
+        self._YtY = None
 
     def explain(self, userid, user_items, itemid, user_weights=None, N=10):
         """Provides explanations for why the item is liked by the user.
@@ -433,6 +443,7 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
             factors=self.factors,
             regularization=self.regularization,
             alpha=self.alpha,
+            dtype=self.dtype,
             iterations=self.iterations,
             calculate_training_loss=self.calculate_training_loss,
             random_state=self.random_state,
@@ -444,21 +455,21 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
         return ret
 
     def save(self, fileobj_or_path):
-        args = dict(
-            user_factors=self.user_factors,
-            item_factors=self.item_factors,
-            regularization=self.regularization,
-            factors=self.factors,
-            num_threads=self.num_threads,
-            iterations=self.iterations,
-            use_native=self.use_native,
-            use_cg=self.use_cg,
-            cg_steps=self.cg_steps,
-            calculate_training_loss=self.calculate_training_loss,
-            dtype=self.dtype.name,
-            random_state=self.random_state,
-            alpha=self.alpha,
-        )
+        args = {
+            "user_factors": self.user_factors,
+            "item_factors": self.item_factors,
+            "regularization": self.regularization,
+            "factors": self.factors,
+            "num_threads": self.num_threads,
+            "iterations": self.iterations,
+            "use_native": self.use_native,
+            "use_cg": self.use_cg,
+            "cg_steps": self.cg_steps,
+            "calculate_training_loss": self.calculate_training_loss,
+            "dtype": self.dtype.name,
+            "random_state": self.random_state,
+            "alpha": self.alpha,
+        }
         # filter out 'None' valued args, since we can't go np.load on
         # them without using pickle
         args = {k: v for k, v in args.items() if v is not None}
@@ -555,3 +566,6 @@ def least_squares_cg(Cui, X, Y, regularization, num_threads=0, cg_steps=3):
             rsold = rsnew
 
         X[u] = x
+
+
+calculate_loss = _als.calculate_loss

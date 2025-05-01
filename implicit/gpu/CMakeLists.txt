@@ -14,7 +14,7 @@ else()
     add_cython_target(_cuda CXX)
 
     # use rapids-cmake to install dependencies
-    file(DOWNLOAD https://raw.githubusercontent.com/rapidsai/rapids-cmake/branch-22.02/RAPIDS.cmake
+    file(DOWNLOAD https://raw.githubusercontent.com/rapidsai/rapids-cmake/branch-23.12/RAPIDS.cmake
         ${CMAKE_BINARY_DIR}/RAPIDS.cmake)
     include(${CMAKE_BINARY_DIR}/RAPIDS.cmake)
     include(rapids-cmake)
@@ -22,24 +22,50 @@ else()
     include(rapids-cuda)
     include(rapids-export)
     include(rapids-find)
+    include(${rapids-cmake-dir}/cpm/package_override.cmake)
+
     rapids_cpm_init()
     rapids_cmake_build_type(Release)
+
+    # thrust/cub have a cmake issue where the conda build fails
+    # to find them, and needs these patches
+    # https://github.com/benfred/cub/commit/97934d146b771fd2e8bda75f73349a4b3c9e10a7
+    # https://github.com/benfred/thrust/commit/8452c764cc8d772314169e99811535f3a9108cfe
+    # (note that cub is pulled in through thrust here - meaning we only need to override
+    # the thrust version to pull it in)
+    # Issue is tracked in https://github.com/NVIDIA/thrust/issues/1966
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/override.json
+      [=[
+        {
+          "packages" : {
+            "Thrust" : {
+              "version" : "1.17.2",
+              "git_url" : "https://github.com/benfred/thrust.git",
+              "git_tag" : "no_cmake_find_root_path",
+              "git_shallow" : true,
+              "always_download" : true,
+            }
+          }
+        }
+    ]=])
+    rapids_cpm_package_override(${CMAKE_CURRENT_BINARY_DIR}/override.json)
 
     # get rmm
     include(${rapids-cmake-dir}/cpm/rmm.cmake)
     rapids_cpm_rmm(BUILD_EXPORT_SET implicit-exports INSTALL_EXPORT_SET implicit-exports)
 
-    # get faiss from git
-    rapids_cpm_find(FAISS 1.7.2
+    # get raft
+    # note: we're using RAFT in header only mode right now - mainly to reduce binary
+    # size of the compiled wheels
+    rapids_cpm_find(raft 23.12
         CPM_ARGS
-          GIT_REPOSITORY  https://github.com/facebookresearch/faiss.git
-          VERSION         1.7.2
+          GIT_REPOSITORY  https://github.com/rapidsai/raft.git
+          GIT_TAG         branch-23.12
           DOWNLOAD_ONLY   YES
     )
-    FILE(GLOB FAISS_BLOCK_SELECT ${FAISS_SOURCE_DIR}/faiss/gpu/utils/blockselect/*.cu)
-    include_directories(${FAISS_SOURCE_DIR})
+    include_directories(${raft_SOURCE_DIR}/cpp/include)
 
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --extended-lambda -Wno-deprecated-gpu-targets -Xfatbin=-compress-all")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --extended-lambda -Wno-deprecated-gpu-targets -Xfatbin=-compress-all --expt-relaxed-constexpr")
 
     add_library(_cuda MODULE ${_cuda}
         als.cu
@@ -47,12 +73,6 @@ else()
         matrix.cu
         random.cu
         knn.cu
-        # we need a limited subset of faiss for the blockselect code. rather than compile all of
-        # faiss, just include the minimal subset here
-        ${FAISS_BLOCK_SELECT}
-        ${FAISS_SOURCE_DIR}/faiss/gpu/utils/BlockSelectFloat.cu
-        ${FAISS_SOURCE_DIR}/faiss/gpu/utils/DeviceUtils.cu
-        ${FAISS_SOURCE_DIR}/faiss/gpu/GpuResources.cpp
     )
 
     python_extension_module(_cuda)
@@ -62,10 +82,14 @@ else()
         set_target_properties(_cuda PROPERTIES CUDA_ARCHITECTURES $ENV{IMPLICIT_CUDA_ARCH})
     else()
         if (${CUDAToolkit_VERSION} VERSION_LESS "11.1.0")
-            set_target_properties(_cuda PROPERTIES CUDA_ARCHITECTURES "37;50;70;60;80")
+            set_target_properties(_cuda PROPERTIES CUDA_ARCHITECTURES "60;70;80")
+        elseif (${CUDAToolkit_VERSION} VERSION_LESS "11.8.0")
+            set_target_properties(_cuda PROPERTIES CUDA_ARCHITECTURES "60;70;80;86")
         else()
-            set_target_properties(_cuda PROPERTIES CUDA_ARCHITECTURES "37;50;70;60;80;86")
+            set_target_properties(_cuda PROPERTIES CUDA_ARCHITECTURES "60;70;80;86;90")
         endif()
+        get_target_property(CUDA_ARCH _cuda CUDA_ARCHITECTURES)
+        message("using cuda architectures ${CUDA_ARCH} for cuda version ${CUDAToolkit_VERSION}")
     endif()
     target_link_libraries(_cuda CUDA::cublas CUDA::curand rmm::rmm)
 

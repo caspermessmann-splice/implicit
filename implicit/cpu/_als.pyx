@@ -1,3 +1,5 @@
+#cython: legacy_implicit_noexcept=True
+
 import cython
 import numpy as np
 
@@ -15,47 +17,56 @@ from libc.string cimport memcpy, memset
 
 # lapack/blas wrappers for cython fused types
 cdef inline void axpy(int * n, floating * da, floating * dx, int * incx, floating * dy,
-                      int * incy) nogil:
+                      int * incy) noexcept nogil:
     if floating is double:
         cython_blas.daxpy(n, da, dx, incx, dy, incy)
     else:
         cython_blas.saxpy(n, da, dx, incx, dy, incy)
 
 cdef inline void symv(char *uplo, int *n, floating *alpha, floating *a, int *lda, floating *x,
-                      int *incx, floating *beta, floating *y, int *incy) nogil:
+                      int *incx, floating *beta, floating *y, int *incy) noexcept nogil:
     if floating is double:
         cython_blas.dsymv(uplo, n, alpha, a, lda, x, incx, beta, y, incy)
     else:
         cython_blas.ssymv(uplo, n, alpha, a, lda, x, incx, beta, y, incy)
 
-cdef inline floating dot(int *n, floating *sx, int *incx, floating *sy, int *incy) nogil:
+cdef inline floating dot(int *n, floating *sx, int *incx, floating *sy, int *incy) noexcept nogil:
     if floating is double:
         return cython_blas.ddot(n, sx, incx, sy, incy)
     else:
         return cython_blas.sdot(n, sx, incx, sy, incy)
 
-cdef inline void scal(int *n, floating *sa, floating *sx, int *incx) nogil:
+cdef inline void scal(int *n, floating *sa, floating *sx, int *incx) noexcept nogil:
     if floating is double:
         cython_blas.dscal(n, sa, sx, incx)
     else:
         cython_blas.sscal(n, sa, sx, incx)
 
 cdef inline void posv(char * u, int * n, int * nrhs, floating * a, int * lda, floating * b,
-                      int * ldb, int * info) nogil:
+                      int * ldb, int * info) noexcept nogil:
     if floating is double:
         cython_lapack.dposv(u, n, nrhs, a, lda, b, ldb, info)
     else:
         cython_lapack.sposv(u, n, nrhs, a, lda, b, ldb, info)
 
 cdef inline void gesv(int * n, int * nrhs, floating * a, int * lda, int * piv, floating * b,
-                      int * ldb, int * info) nogil:
+                      int * ldb, int * info) noexcept nogil:
     if floating is double:
         cython_lapack.dgesv(n, nrhs, a, lda, piv, b, ldb, info)
     else:
         cython_lapack.sgesv(n, nrhs, a, lda, piv, b, ldb, info)
 
 
+def _check_als_dtype(X):
+    _ALLOWED_DTYPES = (np.float32, np.float64)
+    if X.dtype not in _ALLOWED_DTYPES:
+        raise ValueError(f"Invalid dtype {X.dtype} for cpu ALS model. "
+                         f"Allowed dtypes are: {_ALLOWED_DTYPES}")
+
+
 def least_squares(Cui, X, Y, regularization, num_threads=0):
+    _check_als_dtype(X)
+    _check_als_dtype(Y)
     YtY = np.dot(np.transpose(Y), Y)
     _least_squares(YtY, Cui.indptr, Cui.indices, Cui.data.astype('float32'),
                    X, Y, regularization, num_threads)
@@ -132,6 +143,8 @@ def _least_squares(YtY, integral[:] indptr, integral[:] indices, float[:] data,
 
 
 def least_squares_cg(Cui, X, Y, regularization, num_threads=0, cg_steps=3):
+    _check_als_dtype(X)
+    _check_als_dtype(Y)
     return _least_squares_cg(Cui.indptr, Cui.indices, Cui.data.astype('float32'),
                              X, Y, regularization, num_threads, cg_steps)
 
@@ -236,6 +249,7 @@ def _least_squares_cg(integral[:] indptr, integral[:] indices, float[:] data,
 
 
 def calculate_loss(Cui, X, Y, regularization, num_threads=0):
+    """ Calculates the loss for an ALS model """
     return _calculate_loss(Cui, Cui.indptr, Cui.indices, Cui.data.astype('float32'),
                            X, Y, regularization, num_threads)
 
@@ -284,7 +298,7 @@ def _calculate_loss(Cui, integral[:] indptr, integral[:] indices, float[:] data,
                 loss += dot(&N, r, &one, &X[u, 0], &one)
                 user_norm += dot(&N, &X[u, 0], &one, &X[u, 0], &one)
 
-            for u in prange(users, schedule='dynamic', chunksize=8):
+            for i in prange(items, schedule='dynamic', chunksize=8):
                 item_norm += dot(&N, &Y[i, 0], &one, &Y[i, 0], &one)
 
         finally:

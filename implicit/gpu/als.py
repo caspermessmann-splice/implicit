@@ -27,6 +27,8 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
         The regularization factor to use
     alpha : float, optional
         The weight to give to positive examples.
+    dtype : data-type, optional
+        Specifies whether to use 16 bit or 32 bit floating point factors
     iterations : int, optional
         The number of ALS iterations to use when fitting data
     calculate_training_loss : bool, optional
@@ -48,6 +50,7 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
         factors=64,
         regularization=0.01,
         alpha=1.0,
+        dtype=np.float32,
         iterations=15,
         calculate_training_loss=False,
         random_state=None,
@@ -61,6 +64,7 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
         self.factors = factors
         self.regularization = regularization
         self.alpha = alpha
+        self.dtype = dtype
 
         # options on how to fit the model
         self.iterations = iterations
@@ -123,15 +127,20 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
             self.user_factors = random_state.uniform(
                 users, self.factors, low=-0.5 / self.factors, high=0.5 / self.factors
             )
+            self.user_factors = self.user_factors.astype(self.dtype)
+
         if self.item_factors is None:
             self.item_factors = random_state.uniform(
                 items, self.factors, low=-0.5 / self.factors, high=0.5 / self.factors
             )
+            self.item_factors = self.item_factors.astype(self.dtype)
 
         log.debug("Initialized factors in %s", time.time() - s)
 
         # invalidate cached norms and squared factors
         self._item_norms = self._user_norms = None
+        self._item_norms_host = self._user_norms_host = None
+        self._YtY = self._XtX = None
 
         Ciu = implicit.gpu.CSRMatrix(Ciu)
         Cui = implicit.gpu.CSRMatrix(Cui)
@@ -139,18 +148,18 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
         Y = self.item_factors
         loss = None
 
-        self._YtY = implicit.gpu.Matrix.zeros(self.factors, self.factors)
-        self._XtX = implicit.gpu.Matrix.zeros(self.factors, self.factors)
+        _YtY = implicit.gpu.Matrix.zeros(self.factors, self.factors)
+        _XtX = implicit.gpu.Matrix.zeros(self.factors, self.factors)
 
         log.debug("Running %i ALS iterations", self.iterations)
         with tqdm(total=self.iterations, disable=not show_progress) as progress:
             for iteration in range(self.iterations):
                 s = time.time()
-                self.solver.calculate_yty(Y, self._YtY, self.regularization)
-                self.solver.least_squares(Cui, X, self._YtY, Y, self.cg_steps)
+                self.solver.calculate_yty(Y, _YtY, self.regularization)
+                self.solver.least_squares(Cui, X, _YtY, Y, self.cg_steps)
 
-                self.solver.calculate_yty(X, self._XtX, self.regularization)
-                self.solver.least_squares(Ciu, Y, self._XtX, X, self.cg_steps)
+                self.solver.calculate_yty(X, _XtX, self.regularization)
+                self.solver.least_squares(Ciu, Y, _XtX, X, self.cg_steps)
                 progress.update(1)
 
                 if self.calculate_training_loss:
@@ -174,7 +183,7 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
             user_items = self.alpha * user_items
 
         users = 1 if np.isscalar(userid) else len(userid)
-        user_factors = implicit.gpu.Matrix.zeros(users, self.factors)
+        user_factors = implicit.gpu.Matrix.zeros(users, self.factors).astype(self.dtype)
         Cui = implicit.gpu.CSRMatrix(user_items)
 
         self.solver.least_squares(
@@ -187,7 +196,7 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
             item_users = self.alpha * item_users
 
         items = 1 if np.isscalar(itemid) else len(itemid)
-        item_factors = implicit.gpu.Matrix.zeros(items, self.factors)
+        item_factors = implicit.gpu.Matrix.zeros(items, self.factors).astype(self.dtype)
         Ciu = implicit.gpu.CSRMatrix(item_users)
         self.solver.least_squares(
             Ciu, item_factors, self.XtX, self.user_factors, cg_steps=self.factors
@@ -225,6 +234,10 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
 
         self.user_factors.assign_rows(userids, user_factors)
 
+        # clear any cached properties that are invalidated by this update
+        self._user_norms = self._user_norms_host = None
+        self._XtX = None
+
     def partial_fit_items(self, itemids, item_users):
         """Incrementally updates item factors
 
@@ -257,6 +270,10 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
         # update the stored factors with the newly calculated values
         self.item_factors.assign_rows(itemids, item_factors)
 
+        # clear any cached properties that are invalidated by this update
+        self._item_norms = self._item_norms_host = None
+        self._YtY = None
+
     @property
     def solver(self):
         if self._solver is None:
@@ -283,6 +300,7 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
             factors=self.factors,
             regularization=self.regularization,
             alpha=self.alpha,
+            dtype=self.dtype,
             iterations=self.iterations,
             calculate_training_loss=self.calculate_training_loss,
             random_state=self.random_state,
@@ -290,3 +308,31 @@ class AlternatingLeastSquares(MatrixFactorizationBase):
         ret.user_factors = self.user_factors.to_numpy() if self.user_factors is not None else None
         ret.item_factors = self.item_factors.to_numpy() if self.item_factors is not None else None
         return ret
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_solver"] = None
+        state["_XtX"] = self._XtX.to_numpy() if self._XtX is not None else None
+        state["_YtY"] = self._YtY.to_numpy() if self._YtY is not None else None
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        if self._XtX is not None:
+            self._XtX = implicit.gpu.Matrix(self._XtX)
+        if self._YtY is not None:
+            self._YtY = implicit.gpu.Matrix(self._YtY)
+
+
+def calculate_loss(Cui, X, Y, regularization, solver=None):
+    """Calculates the loss for an ALS model"""
+    if not isinstance(Cui, implicit.gpu.CSRMatrix):
+        Cui = implicit.gpu.CSRMatrix(Cui)
+    if not isinstance(X, implicit.gpu.Matrix):
+        X = implicit.gpu.Matrix(X)
+    if not isinstance(Y, implicit.gpu.Matrix):
+        Y = implicit.gpu.Matrix(Y)
+    if solver is None:
+        solver = implicit.gpu.LeastSquaresSolver()
+
+    return solver.calculate_loss(Cui, X, Y, regularization)
