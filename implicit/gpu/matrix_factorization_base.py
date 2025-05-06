@@ -40,6 +40,7 @@ class MatrixFactorizationBase(RecommenderBase):
         filter_items=None,
         recalculate_user=False,
         items=None,
+        filter_user_items=None,
     ):
         if filter_already_liked_items or recalculate_user:
             if not isinstance(user_items, csr_matrix):
@@ -47,6 +48,12 @@ class MatrixFactorizationBase(RecommenderBase):
             user_count = 1 if np.isscalar(userid) else len(userid)
             if user_items.shape[0] != user_count:
                 raise ValueError("user_items must contain 1 row for every user in userids")
+
+        if filter_user_items is not None:
+            if not isinstance(filter_user_items, csr_matrix):
+                raise ValueError("filter_user_items needs to be a CSR sparse matrix")
+            if filter_user_items.shape[0] != (1 if np.isscalar(userid) else len(userid)):
+                raise ValueError("filter_user_items must contain 1 row for every user in userids")
 
         if recalculate_user:
             user_factors = self.recalculate_user(userid, user_items)
@@ -72,7 +79,7 @@ class MatrixFactorizationBase(RecommenderBase):
 
         query_filter = None
         if filter_already_liked_items:
-            query_filter = user_items
+            query_filter = filter_user_items if filter_user_items is not None else user_items
 
             # if we've been given a list of explicit itemids to rank, we need to filter down
             if items is not None:
@@ -229,6 +236,51 @@ class MatrixFactorizationBase(RecommenderBase):
             self.item_factors = implicit.gpu.Matrix(self.item_factors)
         if self.user_factors is not None:
             self.user_factors = implicit.gpu.Matrix(self.user_factors)
+
+    def recommend_all(
+        self,
+        user_items,
+        N=10,
+        recalculate_user=False,
+        filter_already_liked_items=True,
+        filter_items=None,
+        users_items_offset=0,
+        filter_user_items=None,
+    ):
+        import warnings
+        warnings.warn(
+            "recommend_all is deprecated. Use recommend with an array of userids instead",
+            DeprecationWarning,
+        )
+
+        from scipy.sparse import lil_matrix
+        userids = np.arange(user_items.shape[0]) + users_items_offset
+        if users_items_offset:
+            adjusted = lil_matrix(
+                (user_items.shape[0] + users_items_offset, user_items.shape[1]),
+                dtype=user_items.dtype,
+            )
+            adjusted[users_items_offset:] = user_items
+            user_items = adjusted.tocsr()
+
+            if filter_user_items is not None:
+                adjusted_filter = lil_matrix(
+                    (filter_user_items.shape[0] + users_items_offset, filter_user_items.shape[1]),
+                    dtype=filter_user_items.dtype,
+                )
+                adjusted_filter[users_items_offset:] = filter_user_items
+                filter_user_items = adjusted_filter.tocsr()
+
+        ids, _ = self.recommend(
+            userids,
+            user_items,
+            N=N,
+            filter_already_liked_items=filter_already_liked_items,
+            filter_items=filter_items,
+            recalculate_user=recalculate_user,
+            filter_user_items=filter_user_items,
+        )
+        return ids
 
 
 def check_random_state(random_state):
