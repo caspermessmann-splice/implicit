@@ -24,7 +24,6 @@ setup(
     description="Collaborative Filtering",
     long_description=read("README.md"),
     long_description_content_type="text/markdown",
-    url="https://github.com/caspermessmann-splice/implicit/",
     license="MIT",
     classifiers=[
         "Development Status :: 7 - Inactive",
