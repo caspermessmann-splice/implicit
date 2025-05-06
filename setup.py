@@ -20,7 +20,7 @@ def exclude_non_implicit_cmake_files(cmake_manifest):
 
 setup(
     name="cf-forked-lib",
-    version="0.7.2+20250506",
+    version="0.7.2.post20250506",
     description="Collaborative Filtering",
     long_description=read("README.md"),
     long_description_content_type="text/markdown",
