@@ -19,17 +19,15 @@ def exclude_non_implicit_cmake_files(cmake_manifest):
 
 
 setup(
-    name="implicit",
-    version="0.7.2",
-    description="Collaborative Filtering for Implicit Feedback Datasets",
+    name="cf-forked-lib",
+    version="0.7.2+20250506",
+    description="Collaborative Filtering",
     long_description=read("README.md"),
     long_description_content_type="text/markdown",
-    url="http://github.com/benfred/implicit/",
-    author="Ben Frederickson",
-    author_email="ben@benfrederickson.com",
+    url="https://github.com/caspermessmann-splice/implicit/",
     license="MIT",
     classifiers=[
-        "Development Status :: 4 - Beta",
+        "Development Status :: 7 - Inactive",
         "Natural Language :: English",
         "Intended Audience :: Science/Research",
         "License :: OSI Approved :: MIT License",
@@ -39,10 +37,6 @@ setup(
         "Operating System :: OS Independent",
         "Topic :: Software Development :: Libraries :: Python Modules",
     ],
-    keywords=(
-        "Matrix Factorization, Implicit Alternating Least Squares, "
-        "Collaborative Filtering, Recommender Systems"
-    ),
     packages=find_packages(),
     install_requires=["numpy>=1.17.0", "scipy>=0.16", "tqdm>=4.27", "threadpoolctl"],
     cmake_process_manifest_hook=exclude_non_implicit_cmake_files,
